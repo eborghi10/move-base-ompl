@@ -16,7 +16,7 @@ find_package(catkin REQUIRED
     base_local_planner
 )
 
-find_package(OMPL REQUIRED)
+find_package(ompl REQUIRED)
 
 catkin_package(
   INCLUDE_DIRS include
@@ -35,10 +35,12 @@ catkin_package(
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
+  ${OMPL_INCLUDE_DIRS}
 )
 
 add_library(ompl_global_planner_lib
   src/ompl_global_planner.cpp
+  src/MinimizeArrivalTime.cpp
 )
 target_link_libraries(ompl_global_planner_lib ${catkin_LIBRARIES} ${OMPL_LIBRARIES})
 

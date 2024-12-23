@@ -1,5 +1,4 @@
-#ifndef _OMPL_GLOBAL_PLANNER_H
-#define _OMPL_GLOBAL_PLANNER_H
+#pragma once
 /*********************************************************************
  *
  * Software License Agreement (BSD License)
@@ -52,6 +51,7 @@
 #include <nav_msgs/GetPlan.h>
 #include <base_local_planner/costmap_model.h>
 
+#include <ompl/base/spaces/DubinsStateSpace.h>
 #include <ompl/base/spaces/SE2StateSpace.h>
 #include <ompl/control/planners/rrt/RRT.h>
 #include <ompl/geometric/planners/rrt/RRTstar.h>
@@ -59,11 +59,14 @@
 #include <ompl/geometric/planners/prm/PRM.h>
 #include <ompl/geometric/planners/rrt/RRTConnect.h>
 #include <ompl/geometric/planners/rrt/TRRT.h>
+#include <ompl/control/spaces/DiscreteControlSpace.h>
 #include <ompl/control/spaces/RealVectorControlSpace.h>
 #include <ompl/control/SimpleSetup.h>
 #include <ompl/base/objectives/StateCostIntegralObjective.h>
 #include <ompl/base/objectives/MechanicalWorkOptimizationObjective.h>
 #include <ompl/base/objectives/PathLengthOptimizationObjective.h>
+
+#include <MinimizeArrivalTime.h>
 
 namespace ob = ompl::base;
 namespace oc = ompl::control;
@@ -73,69 +76,87 @@ namespace ompl_global_planner {
 
 class OmplGlobalPlanner : public nav_core::BaseGlobalPlanner
 {
-    public:
-        OmplGlobalPlanner();
+public:
+    OmplGlobalPlanner();
 
-        // Implemented functions for plugin:
-        virtual void initialize(std::string name, costmap_2d::Costmap2DROS* costmap_ros);
-        virtual bool makePlan(const geometry_msgs::PoseStamped& start, const geometry_msgs::PoseStamped& goal,
-                      std::vector<geometry_msgs::PoseStamped>& plan);
+    // Implemented functions for plugin:
+    virtual void initialize(std::string name, costmap_2d::Costmap2DROS* costmap_ros);
+    virtual bool makePlan(const geometry_msgs::PoseStamped& start, const geometry_msgs::PoseStamped& goal,
+                    std::vector<geometry_msgs::PoseStamped>& plan);
 
-        void publishPlan(const std::vector<geometry_msgs::PoseStamped>& path);
+    void publishPlan(const std::vector<geometry_msgs::PoseStamped>& path);
 
-        ~OmplGlobalPlanner() {
-        }
+    ~OmplGlobalPlanner() = default;
 
-        // Ompl related functions:
-        void propagate(const ob::State *start, const oc::Control *control, const double duration, ob::State *result);
-        bool isStateValid(const oc::SpaceInformation *si, const ob::State *state);
+    // Ompl related functions:
+    void propagate(const ob::State *start, const oc::Control *control, const double duration, ob::State *result);
+    bool isStateValid(const oc::SpaceInformation *si, const ob::State *state);
 
-        double calc_cost(const ob::State*);
-        double motion_cost(const ob::State* s1, const ob::State* s2);
-        void get_xy_theta_v(const ob::State* s, double& x, double& y, double& theta, double& velocity);
-        void set_xy_theta_v(ob::State*, double x, double y, double theta, double velocity);
+    double calc_cost(const ob::State*);
+    double motion_cost(const ob::State* s1, const ob::State* s2);
+    void fromOMPL(const ob::State* s, double& x, double& y, double& theta, double& velocity, double& psi);
+    void toOMPL(ob::State*, const double& x, const double& y, const double& theta, const double& velocity, const double& psi);
 
-    private:
-        costmap_2d::Costmap2DROS* _costmap_ros;
-        std::string _frame_id;
-        ros::Publisher _plan_pub;
-        bool _initialized;
-        bool _allow_unknown;
+private:
+    /**
+     * @brief Check if the car-trailer is jackknifing.
+     * @param psi The angle between the car and the trailer.
+     * @return True if the car-trailer is jackknifing, false otherwise.
+     */
+    bool jackknifing(const double& psi) const;
 
-        std::string tf_prefix_;
-        boost::mutex _mutex;
-        base_local_planner::CostmapModel* _costmap_model;
+    costmap_2d::Costmap2DROS* _costmap_ros;
+    std::string _frame_id;
+    ros::Publisher _plan_pub;
+    bool _initialized;
+    bool _allow_unknown;
 
-        // State spaces:
-        ob::StateSpacePtr _se2_space;
-        ob::StateSpacePtr _velocity_space;
-        ob::StateSpacePtr _space;
+    std::string tf_prefix_;
+    boost::mutex _mutex;
+    base_local_planner::CostmapModel* _costmap_model;
+
+    // State spaces:
+    ob::StateSpacePtr _se2_space{nullptr};
+    ob::StateSpacePtr _so2_space{nullptr};
+    ob::StateSpacePtr _velocity_space{nullptr};
+    std::shared_ptr<ob::CompoundStateSpace> _space{nullptr};
+
+    oc::SpaceInformationPtr _si{nullptr};
+
+    // constant values of the robot structure
+    // Distance between the centre of rotation of the robot and the hitch point
+    const double lr_{2.8};
+    // distance between the hitch point and the trailer axle
+    const double lt_{2.865};
+
+    // We ASSUME that we are in the jackknifing situation if |psi| > pi/3 = 60°
+    static constexpr double JACKKNIFING_ANGLE = boost::math::constants::pi<double>() / 3;
 };
 
 
 class CostMapObjective : public ob::StateCostIntegralObjective
 {
-    public:
-    CostMapObjective(OmplGlobalPlanner& op, const ob::SpaceInformationPtr& si)
-        : ob::StateCostIntegralObjective(si, true),
-        _ompl_planner(op)
-    {
-    }
+public:
+CostMapObjective(OmplGlobalPlanner& op, const ob::SpaceInformationPtr& si)
+    : ob::StateCostIntegralObjective(si, true),
+    _ompl_planner(op)
+{
+}
 
-    virtual ob::Cost stateCost(const ob::State* s) const
-    {
-        return ob::Cost(_ompl_planner.calc_cost(s));
-    }
+virtual ob::Cost stateCost(const ob::State* s) const
+{
+    return ob::Cost(_ompl_planner.calc_cost(s));
+}
 
 
-    private:
-        OmplGlobalPlanner& _ompl_planner;
+private:
+    OmplGlobalPlanner& _ompl_planner;
 };
 
 
 class CostMapWorkObjective : public ob::MechanicalWorkOptimizationObjective
 {
-    public:
+public:
     CostMapWorkObjective(OmplGlobalPlanner& op, const ob::SpaceInformationPtr& si)
         : ob::MechanicalWorkOptimizationObjective(si),
         _ompl_planner(op)
@@ -154,10 +175,8 @@ class CostMapWorkObjective : public ob::MechanicalWorkOptimizationObjective
     }
     */
 
-    private:
-        OmplGlobalPlanner& _ompl_planner;
+private:
+    OmplGlobalPlanner& _ompl_planner;
 };
 
 }
-
-#endif
